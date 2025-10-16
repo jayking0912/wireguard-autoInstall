@@ -65,7 +65,9 @@ while IFS= read -r IF_LINE; do
       break
     fi
   done
-  $DUPLICATED && continue
+  if [[ $DUPLICATED == true ]]; then
+    continue
+  fi
   AVAILABLE_IFS+=("$IF_NAME")
 done < <(ip -o link show 2>/dev/null)
 if [[ ${#AVAILABLE_IFS[@]} -eq 0 ]]; then
@@ -79,7 +81,7 @@ WAN_IF=${WAN_IF:-$DEFAULT_LIST_IF}
 
 # 尝试探测公网 IP（可手动输入）
 PUB_IP_GUESS="$( (command -v curl >/dev/null && curl -s --max-time 3 ifconfig.me) || true )"
-if [[ -z "$PUB_IP_GUESS" && command -v dig >/dev/null 2>&1 ]]; then
+if [[ -z "$PUB_IP_GUESS" ]] && command -v dig >/dev/null 2>&1; then
   PUB_IP_GUESS="$(dig -4 +short myip.opendns.com @resolver1.opendns.com || true)"
 fi
 read -rp "VPS 公网 IP/域名（用于客户端 Endpoint）[默认 ${PUB_IP_GUESS:-<必填或稍后手动替换>}]: " ENDPOINT_HOST
