@@ -11,6 +11,12 @@
 ## 快速开始
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/jayking0912/wireguard-autoInstall/main/deploy.sh -o deploy.sh && sudo bash deploy.sh
+```
+
+或在已克隆的仓库中运行：
+
+```bash
 sudo bash deploy.sh
 ```
 
