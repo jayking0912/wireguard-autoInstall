@@ -93,7 +93,7 @@ echo ">> 安装 WireGuard 及工具..."
 case "$OS_ID" in
   ubuntu|debian)
     apt-get update -y
-    BASE_PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode)
+    BASE_PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode wireguard-go)
     apt-get install -y "${BASE_PACKAGES[@]}"
 
     if apt-cache show wireguard-dkms >/dev/null 2>&1; then
@@ -118,10 +118,10 @@ case "$OS_ID" in
   centos|rocky|almalinux|rhel)
     if command -v dnf >/dev/null 2>&1; then
       dnf install -y epel-release || true
-      dnf install -y wireguard-tools iproute iptables qrencode
+      dnf install -y wireguard-tools iproute iptables qrencode wireguard-go
     else
       yum install -y epel-release || true
-      yum install -y wireguard-tools iproute iptables qrencode
+      yum install -y wireguard-tools iproute iptables qrencode wireguard-go
     fi
     ;;
   *)
