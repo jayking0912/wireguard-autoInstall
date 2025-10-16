@@ -49,8 +49,20 @@ DNS_IP=${DNS_IP:-8.8.8.8}
 
 # 自动探测出口网卡
 DEFAULT_WAN_IF="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')"
-read -rp "VPS 出口网卡名（用于 NAT）[默认 ${DEFAULT_WAN_IF:-eth0}]: " WAN_IF
-WAN_IF=${WAN_IF:-${DEFAULT_WAN_IF:-eth0}}
+AVAILABLE_IFS=()
+while IFS="" read -r IF_LINE; do
+  IF_NAME="${IF_LINE%%:*}"
+  IF_NAME="${IF_NAME//[[:space:]]/}"
+  [[ -z "$IF_NAME" || "$IF_NAME" == "lo" ]] && continue
+  AVAILABLE_IFS+=("$IF_NAME")
+done < <(ip -o link show 2>/dev/null)
+if [[ ${#AVAILABLE_IFS[@]} -eq 0 ]]; then
+  AVAILABLE_IFS=("${DEFAULT_WAN_IF:-eth0}")
+fi
+DEFAULT_LIST_IF="${DEFAULT_WAN_IF:-${AVAILABLE_IFS[0]}}"
+echo "检测到可用网卡：${AVAILABLE_IFS[*]}"
+read -rp "VPS 出口网卡名（用于 NAT）[默认 ${DEFAULT_LIST_IF}]: " WAN_IF
+WAN_IF=${WAN_IF:-$DEFAULT_LIST_IF}
 
 # 尝试探测公网 IP（可手动输入）
 PUB_IP_GUESS="$( (command -v curl >/dev/null && curl -s --max-time 3 ifconfig.me) || true )"
