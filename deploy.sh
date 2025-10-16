@@ -50,8 +50,9 @@ DNS_IP=${DNS_IP:-8.8.8.8}
 # 自动探测出口网卡
 DEFAULT_WAN_IF="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')"
 AVAILABLE_IFS=()
-while IFS="" read -r IF_LINE; do
-  IF_NAME="${IF_LINE%%:*}"
+while IFS= read -r IF_LINE; do
+  IF_NAME="${IF_LINE#*: }"
+  IF_NAME="${IF_NAME%%:*}"
   IF_NAME="${IF_NAME//[[:space:]]/}"
   [[ -z "$IF_NAME" || "$IF_NAME" == "lo" ]] && continue
   AVAILABLE_IFS+=("$IF_NAME")
