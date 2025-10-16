@@ -48,36 +48,34 @@ read -rp "DNS（客户端使用）[默认 8.8.8.8]: " DNS_IP
 DNS_IP=${DNS_IP:-8.8.8.8}
 
 # 自动探测出口网卡
-DEFAULT_WAN_IF_RAW="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')"
-DEFAULT_WAN_IF="${DEFAULT_WAN_IF_RAW%%@*}"
+DEFAULT_WAN_IF=""
+DEFAULT_ROUTE_OUTPUT="$(ip route get 1.1.1.1 2>/dev/null || true)"
+if [[ -n "$DEFAULT_ROUTE_OUTPUT" ]]; then
+  DEFAULT_WAN_IF="$(awk '{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}' <<<"$DEFAULT_ROUTE_OUTPUT")"
+  DEFAULT_WAN_IF="${DEFAULT_WAN_IF%%@*}"
+fi
 AVAILABLE_IFS=()
 while IFS= read -r IF_LINE; do
   IF_NAME="${IF_LINE#*: }"
   IF_NAME="${IF_NAME%%:*}"
+  IF_NAME="${IF_NAME%%@*}"
   IF_NAME="${IF_NAME//[[:space:]]/}"
   [[ -z "$IF_NAME" || "$IF_NAME" == "lo" ]] && continue
-  IF_NAME="${IF_NAME%%@*}"
-  [[ -z "$IF_NAME" ]] && continue
-  DUPLICATED=false
-  for EXIST_IF in "${AVAILABLE_IFS[@]}"; do
-    if [[ "$EXIST_IF" == "$IF_NAME" ]]; then
-      DUPLICATED=true
-      break
-    fi
-  done
-  if [[ $DUPLICATED == true ]]; then
-    continue
-  fi
+  case " ${AVAILABLE_IFS[*]} " in
+    *" $IF_NAME "*) continue ;;
+  esac
   AVAILABLE_IFS+=("$IF_NAME")
 done < <(ip -o link show 2>/dev/null)
-if [[ ${#AVAILABLE_IFS[@]} -eq 0 ]]; then
-  AVAILABLE_IFS=("${DEFAULT_WAN_IF:-eth0}")
+if [[ -z "$DEFAULT_WAN_IF" && ${#AVAILABLE_IFS[@]} -gt 0 ]]; then
+  DEFAULT_WAN_IF="${AVAILABLE_IFS[0]}"
 fi
-DEFAULT_LIST_IF="${DEFAULT_WAN_IF:-${AVAILABLE_IFS[0]}}"
-DEFAULT_LIST_IF="${DEFAULT_LIST_IF:-eth0}"
+DEFAULT_WAN_IF="${DEFAULT_WAN_IF:-eth0}"
+if [[ ${#AVAILABLE_IFS[@]} -eq 0 ]]; then
+  AVAILABLE_IFS=("$DEFAULT_WAN_IF")
+fi
 echo "检测到可用网卡：${AVAILABLE_IFS[*]}"
-read -rp "VPS 出口网卡名（用于 NAT）[默认 ${DEFAULT_LIST_IF}]: " WAN_IF
-WAN_IF=${WAN_IF:-$DEFAULT_LIST_IF}
+read -rp "VPS 出口网卡名（用于 NAT）[默认 ${DEFAULT_WAN_IF}]: " WAN_IF
+WAN_IF=${WAN_IF:-$DEFAULT_WAN_IF}
 
 # 尝试探测公网 IP（可手动输入）
 PUB_IP_GUESS="$( (command -v curl >/dev/null && curl -s --max-time 3 ifconfig.me) || true )"
@@ -113,7 +111,9 @@ case "$OS_ID" in
     ;;
 esac
 
-modprobe wireguard || true
+if ! modprobe wireguard 2>/dev/null; then
+  echo "警告: 无法加载 wireguard 内核模块，可能使用内核内置或用户态实现，继续执行。"
+fi
 
 # =============== 生成密钥 ===============
 install -d -m 700 /etc/wireguard
@@ -157,10 +157,11 @@ chmod 600 "$WG_CONF"
 # =============== 开启内核转发（持久） ===============
 SYSCTL_D="/etc/sysctl.d"
 install -d "$SYSCTL_D"
-cat > "${SYSCTL_D}/99-wireguard-forward.conf" <<EOF
+SYSCTL_FILE="${SYSCTL_D}/99-wireguard-forward.conf"
+cat > "$SYSCTL_FILE" <<EOF
 net.ipv4.ip_forward=1
 EOF
-sysctl --system >/dev/null
+sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
 
 # =============== 放行防火墙（如存在） ===============
 if command -v ufw >/dev/null 2>&1; then
