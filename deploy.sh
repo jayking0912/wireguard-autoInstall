@@ -1,6 +1,101 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+add_more_clients() {
+  local skip_prompt="${1:-false}"
+
+  if [[ "$skip_prompt" != "true" ]]; then
+    read -rp "是否继续添加更多客户端？(y/N): " ADD_MORE
+    [[ "${ADD_MORE,,}" == "y" ]] || return
+  else
+    echo "开始添加新客户端..."
+  fi
+
+  install -d -m 700 /etc/wireguard/clients
+
+  declare -A USED_HOSTS=()
+
+  local SERVER_HOST="${SERVER_IP##*.}"
+  [[ -n "$SERVER_HOST" ]] && USED_HOSTS["$SERVER_HOST"]=1
+
+  if [[ -n "${CLIENT_IP:-}" ]]; then
+    local CLIENT_HOST="${CLIENT_IP##*.}"
+    [[ -n "$CLIENT_HOST" ]] && USED_HOSTS["$CLIENT_HOST"]=1
+  fi
+
+  if [[ -d /etc/wireguard/clients ]]; then
+    while IFS= read -r CONF_FILE; do
+      local ADDR_LINE
+      ADDR_LINE="$(grep -m1 '^Address = ' "$CONF_FILE" || true)"
+      if [[ -n "$ADDR_LINE" ]]; then
+        local ADDR_VALUE="${ADDR_LINE#Address = }"
+        local ADDR_IP="${ADDR_VALUE%%/*}"
+        local HOST_OCT="${ADDR_IP##*.}"
+        [[ -n "$HOST_OCT" ]] && USED_HOSTS["$HOST_OCT"]=1
+      fi
+    done < <(find /etc/wireguard/clients -maxdepth 2 -type f -name '*.conf' 2>/dev/null)
+  fi
+
+  local NEXT_HOST=0
+  for HOST in "${!USED_HOSTS[@]}"; do
+    if (( HOST > NEXT_HOST )); then
+      NEXT_HOST=$HOST
+    fi
+  done
+  NEXT_HOST=$((NEXT_HOST+1))
+
+  while true; do
+    read -rp "新客户端名称: " NEWC
+    [[ -z "$NEWC" ]] && break
+
+    install -d -m 700 "/etc/wireguard/clients/${NEWC}"
+
+    umask 077
+    wg genkey | tee "/etc/wireguard/clients/${NEWC}/${NEWC}_privatekey" | wg pubkey > "/etc/wireguard/clients/${NEWC}/${NEWC}_publickey"
+    local NEWC_PRIV="$(cat "/etc/wireguard/clients/${NEWC}/${NEWC}_privatekey")"
+    local NEWC_PUB="$(cat "/etc/wireguard/clients/${NEWC}/${NEWC}_publickey")"
+
+    while [[ -n "${USED_HOSTS[$NEXT_HOST]:-}" ]]; do
+      NEXT_HOST=$((NEXT_HOST+1))
+      if (( NEXT_HOST >= 255 )); then
+        echo "IPv4 网段已无可用地址，无法继续添加。"
+        return
+      fi
+    done
+
+    local NEWC_IP="${o1}.${o2}.${o3}.${NEXT_HOST}"
+    USED_HOSTS["$NEXT_HOST"]=1
+    NEXT_HOST=$((NEXT_HOST+1))
+
+    local NEWC_CONF="/etc/wireguard/clients/${NEWC}/${NEWC}.conf"
+    cat > "$NEWC_CONF" <<EOF
+[Interface]
+PrivateKey = ${NEWC_PRIV}
+Address = ${NEWC_IP}/${WG_PREFIX}
+DNS = ${DNS_IP}
+
+[Peer]
+PublicKey = ${SERVER_PUB_KEY}
+Endpoint = ${ENDPOINT_HOST}:${WG_PORT}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+EOF
+
+    chmod 600 "$NEWC_CONF"
+
+    wg set wg0 peer "${NEWC_PUB}" allowed-ips "${NEWC_IP}/32"
+
+    echo "已创建客户端 ${NEWC}，配置文件：${NEWC_CONF}"
+    if command -v qrencode >/dev/null 2>&1; then
+      echo "二维码如下："
+      qrencode -t ansiutf8 < "${NEWC_CONF}"
+    fi
+
+    read -rp "继续添加下一个？(y/N): " CONT
+    [[ "${CONT,,}" == "y" ]] || break
+  done
+}
+
 # =============== 基本校验 ===============
 if [[ $EUID -ne 0 ]]; then
   echo "请用 root 运行：sudo $0"
@@ -10,6 +105,88 @@ fi
 if ! command -v ip >/dev/null 2>&1; then
   echo "缺少 iproute2/ip 命令，请先安装基础网络组件。"
   exit 1
+fi
+
+WG_CONF_PATH="/etc/wireguard/wg0.conf"
+if [[ -f "$WG_CONF_PATH" ]]; then
+  echo "检测到 WireGuard 已部署。"
+  read -rp "是否继续添加客户端？(y/N): " ADD_ON_EXIST
+  if [[ "${ADD_ON_EXIST,,}" != "y" ]]; then
+    echo "已取消，未做任何修改。"
+    exit 0
+  fi
+
+  SERVER_ADDR_LINE="$(grep -m1 '^Address = ' "$WG_CONF_PATH" || true)"
+  if [[ -z "$SERVER_ADDR_LINE" ]]; then
+    echo "无法从 ${WG_CONF_PATH} 读取 Address 字段，请检查现有配置。"
+    exit 1
+  fi
+
+  SERVER_ADDR_VALUE="${SERVER_ADDR_LINE#Address = }"
+  SERVER_IP="${SERVER_ADDR_VALUE%%/*}"
+  WG_PREFIX="${SERVER_ADDR_VALUE##*/}"
+  if [[ -z "${SERVER_IP:-}" || -z "${WG_PREFIX:-}" ]]; then
+    echo "无法解析服务端地址或掩码，请检查现有配置。"
+    exit 1
+  fi
+
+  IFS='.' read -r o1 o2 o3 o4 <<<"$SERVER_IP"
+
+  LISTEN_LINE="$(grep -m1 '^ListenPort = ' "$WG_CONF_PATH" || true)"
+  WG_PORT="${LISTEN_LINE#ListenPort = }"
+  WG_PORT="${WG_PORT:-51820}"
+
+  SERVER_PUB_KEY="$(cat /etc/wireguard/server_publickey 2>/dev/null || true)"
+  if [[ -z "$SERVER_PUB_KEY" && -f /etc/wireguard/server_privatekey ]]; then
+    SERVER_PUB_KEY="$(wg pubkey < /etc/wireguard/server_privatekey 2>/dev/null || true)"
+  fi
+  if [[ -z "$SERVER_PUB_KEY" ]]; then
+    SERVER_PUB_KEY="$(wg show wg0 public-key 2>/dev/null || true)"
+  fi
+  if [[ -z "$SERVER_PUB_KEY" ]]; then
+    echo "无法获取服务端公钥，请确认现有部署正常。"
+    exit 1
+  fi
+
+  DNS_IP=""
+  ENDPOINT_HOST=""
+  CLIENT_IP=""
+
+  FIRST_CLIENT_CONF="$(find /etc/wireguard/clients -maxdepth 2 -type f -name '*.conf' -print -quit 2>/dev/null || true)"
+  if [[ -n "$FIRST_CLIENT_CONF" ]]; then
+    CLIENT_ADDR_LINE="$(grep -m1 '^Address = ' "$FIRST_CLIENT_CONF" || true)"
+    if [[ -n "$CLIENT_ADDR_LINE" ]]; then
+      CLIENT_ADDR_VALUE="${CLIENT_ADDR_LINE#Address = }"
+      CLIENT_IP="${CLIENT_ADDR_VALUE%%/*}"
+    fi
+
+    DNS_LINE="$(grep -m1 '^DNS = ' "$FIRST_CLIENT_CONF" || true)"
+    if [[ -n "$DNS_LINE" ]]; then
+      DNS_IP="${DNS_LINE#DNS = }"
+    fi
+
+    ENDPOINT_LINE="$(grep -m1 '^Endpoint = ' "$FIRST_CLIENT_CONF" || true)"
+    if [[ -n "$ENDPOINT_LINE" ]]; then
+      ENDPOINT_VALUE="${ENDPOINT_LINE#Endpoint = }"
+      if [[ "$ENDPOINT_VALUE" == \[*\]*:* ]]; then
+        ENDPOINT_HOST="${ENDPOINT_VALUE%%]*}"
+        ENDPOINT_HOST="${ENDPOINT_HOST#[}"
+        ENDPOINT_PORT="${ENDPOINT_VALUE##*:}"
+      else
+        ENDPOINT_HOST="${ENDPOINT_VALUE%:*}"
+        ENDPOINT_PORT="${ENDPOINT_VALUE##*:}"
+      fi
+      if [[ "$ENDPOINT_PORT" =~ ^[0-9]+$ ]]; then
+        WG_PORT="$ENDPOINT_PORT"
+      fi
+    fi
+  fi
+
+  DNS_IP="${DNS_IP:-8.8.8.8}"
+  ENDPOINT_HOST="${ENDPOINT_HOST:-<REPLACE_ME>}"
+
+  add_more_clients true
+  exit 0
 fi
 
 # =============== 发行版检测 ===============
@@ -259,73 +436,6 @@ else
   echo "未安装 qrencode，无法在终端显示二维码。你可以将 ${CLIENT_CONF} 复制到手机导入。"
 fi
 
-# =============== 可选：继续添加更多客户端 ===============
-read -rp "是否继续添加更多客户端？(y/N): " ADD_MORE
-if [[ "${ADD_MORE,,}" == "y" ]]; then
-  declare -A USED_HOSTS=()
-  SERVER_HOST="${SERVER_IP##*.}"
-  USED_HOSTS["$SERVER_HOST"]=1
-  CLIENT_HOST="${CLIENT_IP##*.}"
-  USED_HOSTS["$CLIENT_HOST"]=1
-  if [[ -d /etc/wireguard/clients ]]; then
-    while IFS= read -r CONF_FILE; do
-      ADDR_LINE="$(grep -m1 '^Address = ' "$CONF_FILE" || true)"
-      if [[ -n "$ADDR_LINE" ]]; then
-        ADDR_VALUE="${ADDR_LINE#Address = }"
-        ADDR_IP="${ADDR_VALUE%%/*}"
-        HOST_OCT="${ADDR_IP##*.}"
-        [[ -n "$HOST_OCT" ]] && USED_HOSTS["$HOST_OCT"]=1
-      fi
-    done < <(find /etc/wireguard/clients -maxdepth 2 -type f -name '*.conf' 2>/dev/null)
-  fi
-  NEXT_HOST=0
-  for HOST in "${!USED_HOSTS[@]}"; do
-    if (( HOST > NEXT_HOST )); then
-      NEXT_HOST=$HOST
-    fi
-  done
-  NEXT_HOST=$((NEXT_HOST+1))
-  while true; do
-    read -rp "新客户端名称: " NEWC
-    [[ -z "$NEWC" ]] && break
-    install -d -m 700 "/etc/wireguard/clients/${NEWC}"
-    umask 077
-    wg genkey | tee "/etc/wireguard/clients/${NEWC}/${NEWC}_privatekey" | wg pubkey > "/etc/wireguard/clients/${NEWC}/${NEWC}_publickey"
-    NEWC_PRIV="$(cat "/etc/wireguard/clients/${NEWC}/${NEWC}_privatekey")"
-    NEWC_PUB="$(cat "/etc/wireguard/clients/${NEWC}/${NEWC}_publickey")"
-    while [[ -n "${USED_HOSTS[$NEXT_HOST]:-}" ]]; do
-      NEXT_HOST=$((NEXT_HOST+1))
-      if (( NEXT_HOST >= 255 )); then
-        echo "IPv4 网段已无可用地址，无法继续添加。"
-        break 2
-      fi
-    done
-    NEWC_IP="${o1}.${o2}.${o3}.${NEXT_HOST}"
-    USED_HOSTS["$NEXT_HOST"]=1
-    NEXT_HOST=$((NEXT_HOST+1))
-    NEWC_CONF="/etc/wireguard/clients/${NEWC}/${NEWC}.conf"
-    cat > "$NEWC_CONF" <<EOF
-[Interface]
-PrivateKey = ${NEWC_PRIV}
-Address = ${NEWC_IP}/${WG_PREFIX}
-DNS = ${DNS_IP}
-
-[Peer]
-PublicKey = ${SERVER_PUB_KEY}
-Endpoint = ${ENDPOINT_HOST}:${WG_PORT}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-EOF
-    chmod 600 "$NEWC_CONF"
-    wg set wg0 peer "${NEWC_PUB}" allowed-ips "${NEWC_IP}/32"
-    echo "已创建客户端 ${NEWC}，配置文件：${NEWC_CONF}"
-    if command -v qrencode >/dev/null 2>&1; then
-      echo "二维码如下："
-      qrencode -t ansiutf8 < "${NEWC_CONF}"
-    fi
-    read -rp "继续添加下一个？(y/N): " CONT
-    [[ "${CONT,,}" == "y" ]] || break
-  done
-fi
+add_more_clients
 
 echo "全部完成！如需查看：wg show；如需停用：wg-quick down wg0"
