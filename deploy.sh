@@ -93,18 +93,25 @@ echo ">> 安装 WireGuard 及工具..."
 case "$OS_ID" in
   ubuntu|debian)
     apt-get update -y
-    PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode)
-    if apt-cache show wireguard-dkms 2>/dev/null | grep -q "."; then
-      PACKAGES+=(wireguard-dkms)
+    BASE_PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode)
+    apt-get install -y "${BASE_PACKAGES[@]}"
+
+    if apt-cache show wireguard-dkms >/dev/null 2>&1; then
+      apt-get install -y wireguard-dkms || echo "警告: wireguard-dkms 安装失败，请手动安装。"
+    else
+      echo "提示: 当前仓库未提供 wireguard-dkms。"
     fi
-    apt-get install -y "${PACKAGES[@]}"
+
     HEADER_PKG="linux-headers-$(uname -r)"
-    if apt-cache show "$HEADER_PKG" 2>/dev/null | grep -q "."; then
+    if apt-cache show "$HEADER_PKG" >/dev/null 2>&1; then
       apt-get install -y "$HEADER_PKG" || true
     fi
+
     if ! command -v wireguard-go >/dev/null 2>&1; then
-      if apt-cache show wireguard-go 2>/dev/null | grep -q "."; then
+      if apt-cache show wireguard-go >/dev/null 2>&1; then
         apt-get install -y wireguard-go || echo "警告: wireguard-go 安装失败，请手动安装。"
+      else
+        echo "提示: 仓库中未找到 wireguard-go，如内核缺少模块请手动安装。"
       fi
     fi
     ;;
@@ -123,13 +130,19 @@ case "$OS_ID" in
     ;;
 esac
 
-if ! modprobe wireguard 2>/dev/null; then
+MODULE_AVAILABLE=false
+if modprobe wireguard 2>/dev/null; then
+  MODULE_AVAILABLE=true
+else
+  if find /lib/modules -maxdepth 3 -name 'wireguard.ko*' 2>/dev/null | grep -q '.'; then
+    MODULE_AVAILABLE=true
+  fi
+fi
+if [[ $MODULE_AVAILABLE == false ]]; then
   if command -v wireguard-go >/dev/null 2>&1; then
-    echo "提示: 内核模块不可用，将尝试使用 wireguard-go。"
-  elif find /lib/modules -maxdepth 3 -name 'wireguard.ko*' 2>/dev/null | grep -q '.'; then
-    echo "提示: 检测到 wireguard 内核模块文件但无法 modprobe，请检查本地内核配置或稍后手动载入。"
+    echo "提示: 未能加载内核模块，将尝试使用 wireguard-go。"
   else
-    echo "警告: 内核缺少 wireguard 模块且未发现 wireguard-go，请安装 wireguard-dkms 或 wireguard-go。"
+    echo "警告: 内核缺少 wireguard 模块且未检测到 wireguard-go，wg-quick 可能启动失败。"
   fi
 fi
 
@@ -197,6 +210,10 @@ fi
 systemctl stop wg-quick@wg0 2>/dev/null || true
 wg-quick down wg0 2>/dev/null || true
 wg-quick up wg0
+if ! wg show wg0 >/dev/null 2>&1; then
+  echo "错误: wg0 启动失败，请检查上方日志并确认内核模块或 wireguard-go 安装。"
+  exit 1
+fi
 systemctl enable wg-quick@wg0 >/dev/null
 
 # =============== 生成客户端配置（含二维码） ===============
