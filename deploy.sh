@@ -93,8 +93,20 @@ echo ">> 安装 WireGuard 及工具..."
 case "$OS_ID" in
   ubuntu|debian)
     apt-get update -y
-    # wireguard 包在较新 Debian/Ubuntu 中包含内核模块；qrencode 生成二维码
-    apt-get install -y wireguard wireguard-tools iproute2 iptables qrencode
+    PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode)
+    if apt-cache show wireguard-dkms 2>/dev/null | grep -q "."; then
+      PACKAGES+=(wireguard-dkms)
+    fi
+    apt-get install -y "${PACKAGES[@]}"
+    HEADER_PKG="linux-headers-$(uname -r)"
+    if apt-cache show "$HEADER_PKG" 2>/dev/null | grep -q "."; then
+      apt-get install -y "$HEADER_PKG" || true
+    fi
+    if ! command -v wireguard-go >/dev/null 2>&1; then
+      if apt-cache show wireguard-go 2>/dev/null | grep -q "."; then
+        apt-get install -y wireguard-go || echo "警告: wireguard-go 安装失败，请手动安装。"
+      fi
+    fi
     ;;
   centos|rocky|almalinux|rhel)
     if command -v dnf >/dev/null 2>&1; then
@@ -112,7 +124,13 @@ case "$OS_ID" in
 esac
 
 if ! modprobe wireguard 2>/dev/null; then
-  echo "警告: 无法加载 wireguard 内核模块，可能使用内核内置或用户态实现，继续执行。"
+  if command -v wireguard-go >/dev/null 2>&1; then
+    echo "提示: 内核模块不可用，将尝试使用 wireguard-go。"
+  elif find /lib/modules -maxdepth 3 -name 'wireguard.ko*' 2>/dev/null | grep -q '.'; then
+    echo "提示: 检测到 wireguard 内核模块文件但无法 modprobe，请检查本地内核配置或稍后手动载入。"
+  else
+    echo "警告: 内核缺少 wireguard 模块且未发现 wireguard-go，请安装 wireguard-dkms 或 wireguard-go。"
+  fi
 fi
 
 # =============== 生成密钥 ===============
