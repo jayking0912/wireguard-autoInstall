@@ -270,7 +270,7 @@ echo ">> 安装 WireGuard 及工具..."
 case "$OS_ID" in
   ubuntu|debian)
     apt-get update -y
-    BASE_PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode wireguard-go)
+    BASE_PACKAGES=(wireguard wireguard-tools iproute2 iptables qrencode)
     apt-get install -y "${BASE_PACKAGES[@]}"
 
     if apt-cache show wireguard-dkms >/dev/null 2>&1; then
