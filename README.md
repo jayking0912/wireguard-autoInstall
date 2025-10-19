@@ -51,3 +51,8 @@ sudo bash deploy.sh
 - 客户端配置文件目录：`/etc/wireguard/clients/<客户端名>/`
 
 如需手动管理客户端，可编辑对应配置后运行 `wg set` 手动更新。若网段地址耗尽，可调整 `deploy.sh` 中的网段默认值或在执行时指定更大的网段。
+
+##  安利VPS脚本全家福（含一键节点）
+```bash
+curl -fsSL https://raw.githubusercontent.com/eooce/ssh_tool/main/ssh_tool.sh -o ssh_tool.sh && chmod +x ssh_tool.sh && ./ssh_tool.sh
+```
